@@ -100,8 +100,20 @@ list_models() {
 list_builds() {
     {
         find "$LLMS_DIR" -maxdepth 1 -type d -name "llama-*" 2>/dev/null
-        find "$LLMS_DIR/llama.cpp" -maxdepth 1 -type d -name "build-*" 2>/dev/null
+        [ -d "$LLMS_DIR/llama.cpp" ] && find "$LLMS_DIR/llama.cpp" -maxdepth 1 -type d -name "build-*" 2>/dev/null
     } | sort | uniq
+}
+
+find_binary() {
+    local base="$1"
+    local name="$2"
+    if [ -x "$base/$name" ]; then
+        echo "$base/$name"
+    elif [ -x "$base/bin/$name" ]; then
+        echo "$base/bin/$name"
+    else
+        echo ""
+    fi
 }
 
 main_menu() {
@@ -150,7 +162,7 @@ install_release_version() {
     local releases_json
     releases_json=$(curl -sL --max-time 15 \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=12")
+        "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=12" || true)
 
     local releases=""
     if command -v jq &>/dev/null; then
@@ -194,6 +206,7 @@ install_release_version() {
     if ! download_with_real_progress "$download_url" "$tmp_archive" "Downloading $archive_name"; then
         # Try common ROCm version fallback
         if [[ "$build_type" == "rocm" ]]; then
+            rm -f "$tmp_archive"
             archive_name="llama-${selected_tag}-bin-ubuntu-rocm-7.3-x64.tar.gz"
             download_url="https://github.com/ggml-org/llama.cpp/releases/download/${selected_tag}/${archive_name}"
             tmp_archive="/tmp/${archive_name}"
@@ -204,6 +217,7 @@ install_release_version() {
             fi
         else
             dlg --msgbox "Failed to download:\n$archive_name" 8 50
+            rm -f "$tmp_archive"
             return
         fi
     fi
@@ -267,7 +281,7 @@ install_release_version() {
 
 use_git_clone_build() {
     dlg --msgbox "Launching build helper.\n\nLong builds will show live real-time output from cmake/make." 8 55
-    "$SCRIPT_DIR/setup-llama.sh" || true
+    "$SCRIPT_DIR/setup-llama.sh" || dlg --msgbox "Build process failed. Check the terminal output for details." 7 55
 }
 
 list_detected_builds() {
@@ -351,6 +365,59 @@ run_flow() {
         off  "off" \
         3>&1 1>&2 2>&3) || flash_attn="auto"
 
+    # === Batching Parameters ===
+    local parallel
+    parallel=$(dlg --menu "Parallel Sequences (--parallel)" 14 72 5 \
+        1 "1  - Best for single user / lowest VRAM usage" \
+        2 "2  - Good balance for most people" \
+        4 "4  - Higher throughput (needs more VRAM)" \
+        8 "8  - Max throughput (high VRAM usage)" \
+        3>&1 1>&2 2>&3) || parallel=1
+
+    local batch_size
+    batch_size=$(dlg --menu "Batch Size (--batch-size)" 14 72 5 \
+        512  "512  - Very safe, lower memory use" \
+        1024 "1024 - Solid default for most models" \
+        2048 "2048 - Recommended for 7900 XTX" \
+        4096 "4096 - Aggressive (high VRAM required)" \
+        3>&1 1>&2 2>&3) || batch_size=2048
+
+    local ubatch_size
+    ubatch_size=$(dlg --menu "Micro Batch Size (--ubatch-size)" 14 72 5 \
+        256  "256  - Very safe" \
+        512  "512  - Good default" \
+        1024 "1024 - Faster per-batch processing" \
+        3>&1 1>&2 2>&3) || ubatch_size=512
+
+    local ngl
+    ngl=$(dlg --menu "GPU Layers Offload (-ngl / --n-gpu-layers)" 16 78 7 \
+        99  "99  - Offload as much as possible to VRAM (recommended for 7900 XTX)" \
+        80  "80  - High VRAM usage, lower system RAM usage" \
+        60  "60  - Medium-high VRAM usage" \
+        40  "40  - Medium VRAM usage" \
+        20  "20  - Low VRAM usage (more layers stay in system RAM)" \
+        0   "0   - CPU only (everything in system RAM)" \
+        3>&1 1>&2 2>&3) || ngl=99
+
+    # === Additional Performance Options ===
+    local cont_batching
+    cont_batching=$(dlg --menu "Continuous Batching (--cont-batching)" 12 72 3 \
+        on  "on  - Recommended for servers (better throughput with multiple requests)" \
+        off "off - Simpler, can be more stable for single-user use" \
+        3>&1 1>&2 2>&3) || cont_batching="on"
+
+    local mmap
+    mmap=$(dlg --menu "Memory Map Model (--mmap)" 12 72 3 \
+        on  "on  - Recommended. Uses less system RAM. Model still loads into VRAM via -ngl." \
+        off "off - Load full model into system RAM first (then offload to VRAM)." \
+        3>&1 1>&2 2>&3) || mmap="on"
+
+    local mlock
+    mlock=$(dlg --menu "Lock Model in RAM (--mlock)" 12 72 3 \
+        off "off - Recommended. Avoid forcing model into system RAM." \
+        on  "on  - Lock into system RAM (prevents swap, uses more system memory)." \
+        3>&1 1>&2 2>&3) || mlock="off"
+
     local mode
     mode=$(dlg --menu "Run mode" 10 48 3 \
         cli    "llama-cli" \
@@ -376,32 +443,28 @@ run_flow() {
 
     if ! dlg --yesno "Launch Parameters:
 
-Model:    $(basename "$model")
-Build:    $(basename "$build")
-Backend:  $backend
-Context:  $ctx
-MTP:      $mtp_label
-KV Cache: $kv
+Model:     $(basename "$model")
+Build:     $(basename "$build")
+Backend:   $backend
+Context:   $ctx
+MTP:       $mtp_label
+KV Cache:  $kv
 FlashAttn: $flash_attn
-Mode:     $mode
 
-Proceed?" 17 55; then
+--parallel:     $parallel
+--batch-size:   $batch_size
+--ubatch-size:  $ubatch_size
+-ngl:           $ngl
+
+--cont-batching: $cont_batching
+--mmap:         $mmap     (system RAM)
+--mlock:        $mlock    (system RAM)
+
+Mode:      $mode
+
+Proceed?" 24 55; then
         return
     fi
-
-    # Find binary: prefer flat prebuilt layout (what official releases actually use),
-    # fall back to bin/ subdir (what source builds usually create).
-    find_binary() {
-        local base="$1"
-        local name="$2"
-        if [ -x "$base/$name" ]; then
-            echo "$base/$name"
-        elif [ -x "$base/bin/$name" ]; then
-            echo "$base/bin/$name"
-        else
-            echo ""
-        fi
-    }
 
     local cli_bin
     cli_bin=$(find_binary "$build" "llama-cli")
@@ -426,10 +489,10 @@ Proceed?" 17 55; then
             --port "$port"
             --host 0.0.0.0
             -c "$ctx"
-            --parallel 1
-            --batch-size 1024
-            --ubatch-size 512
-            -ngl 99
+            --parallel "$parallel"
+            --batch-size "$batch_size"
+            --ubatch-size "$ubatch_size"
+            -ngl "$ngl"
             --jinja
             --verbosity 3
         )
@@ -439,6 +502,21 @@ Proceed?" 17 55; then
 
         if [ -n "$use_dev_flag" ]; then
             server_args+=($use_dev_flag)
+        fi
+
+        # Additional performance options
+        if [[ "$cont_batching" == "on" ]]; then
+            server_args+=(--cont-batching)
+        fi
+
+        if [[ "$mmap" == "on" ]]; then
+            server_args+=(--mmap)
+        else
+            server_args+=(--no-mmap)
+        fi
+
+        if [[ "$mlock" == "on" ]]; then
+            server_args+=(--mlock)
         fi
 
         # Add cache flags only if set
@@ -469,7 +547,7 @@ Proceed?" 17 55; then
         if is_dialog; then
             "$DIALOG_CMD" --backtitle "Don RDNA Lab — llama.cpp v$VERSION" \
                 --title " llama-server startup log (press OK or ESC to close) " \
-                --tailbox /tmp/llama-server.log 22 95
+                --tailbox /tmp/llama-server.log 26 130
         fi
 
         dlg --msgbox "Server launched on port $port\n\nLog file: /tmp/llama-server.log" 8 50
@@ -478,9 +556,12 @@ Proceed?" 17 55; then
 
         local cli_args=(
             -m "$model"
-            -ngl 99
+            -ngl "$ngl"
             -c "$ctx"
             -n -1
+            --parallel "$parallel"
+            --batch-size "$batch_size"
+            --ubatch-size "$ubatch_size"
         )
 
         if [ -n "$use_dev_flag" ]; then
@@ -488,6 +569,21 @@ Proceed?" 17 55; then
         fi
 
         cli_args+=(--flash-attn "$flash_attn")
+
+        # Additional performance options
+        if [[ "$cont_batching" == "on" ]]; then
+            cli_args+=(--cont-batching)
+        fi
+
+        if [[ "$mmap" == "on" ]]; then
+            cli_args+=(--mmap)
+        else
+            cli_args+=(--no-mmap)
+        fi
+
+        if [[ "$mlock" == "on" ]]; then
+            cli_args+=(--mlock)
+        fi
 
         if [ -n "$mtp_flag" ]; then
             # shellcheck disable=SC2206
@@ -567,13 +663,33 @@ benchmark_flow() {
         3>&1 1>&2 2>&3) || gen_size=128
 
     local ngl
-    ngl=$(dlg --menu "GPU Layers (-ngl)" 14 50 6 \
-        99 "99 (max)" \
-        80 "80" \
-        50 "50" \
-        20 "20" \
-        0 "0 (CPU only)" \
+    ngl=$(dlg --menu "GPU Layers Offload (-ngl / --n-gpu-layers)" 16 78 7 \
+        99  "99  - Offload as much as possible to VRAM (recommended for 7900 XTX)" \
+        80  "80  - High VRAM usage, lower system RAM usage" \
+        60  "60  - Medium-high VRAM usage" \
+        40  "40  - Medium VRAM usage" \
+        20  "20  - Low VRAM usage (more layers stay in system RAM)" \
+        0   "0   - CPU only (everything in system RAM)" \
         3>&1 1>&2 2>&3) || ngl=99
+
+    # === Additional Performance Options (same as Run Inference) ===
+    local cont_batching
+    cont_batching=$(dlg --menu "Continuous Batching (--cont-batching)" 12 72 3 \
+        on  "on  - Recommended for realistic server-like benchmarking" \
+        off "off - Simpler scheduling" \
+        3>&1 1>&2 2>&3) || cont_batching="on"
+
+    local mmap
+    mmap=$(dlg --menu "Memory Map Model (--mmap)" 12 72 3 \
+        on  "on  - Recommended. Uses less system RAM. Model still loads into VRAM via -ngl." \
+        off "off - Load full model into system RAM first (then offload to VRAM)." \
+        3>&1 1>&2 2>&3) || mmap="on"
+
+    local mlock
+    mlock=$(dlg --menu "Lock Model in RAM (--mlock)" 12 72 3 \
+        off "off - Recommended. Avoid forcing model into system RAM." \
+        on  "on  - Lock into system RAM (prevents swap, uses more system memory)." \
+        3>&1 1>&2 2>&3) || mlock="off"
 
     local reps
     reps=$(dlg --menu "Number of Runs (-r)" 12 50 4 \
@@ -612,7 +728,11 @@ Backend: $backend
 -r:  $reps
 --flash-attn: $use_flash
 
-Run benchmark?" 17 55; then
+--cont-batching: $cont_batching
+--mmap:          $mmap     (system RAM)
+--mlock:         $mlock    (system RAM)
+
+Run benchmark?" 20 55; then
         return
     fi
 
@@ -627,6 +747,21 @@ Run benchmark?" 17 55; then
         -ub 512
         --flash-attn "$use_flash"
     )
+
+    # Additional performance options (structured for llama-bench)
+    if [[ "$cont_batching" == "on" ]]; then
+        bench_args+=(--cont-batching)
+    fi
+
+    if [[ "$mmap" == "on" ]]; then
+        bench_args+=(--mmap)
+    else
+        bench_args+=(--no-mmap)
+    fi
+
+    if [[ "$mlock" == "on" ]]; then
+        bench_args+=(--mlock)
+    fi
 
     # Only add -dev for builds that need it (source builds)
     if [ -n "$use_dev_flag" ]; then
@@ -649,17 +784,10 @@ Run benchmark?" 17 55; then
     stdout_file=$(mktemp)
     stderr_file=$(mktemp)
 
-    if is_dialog; then
-        set +e
-        "$bench_bin" "${bench_args[@]}" > "$stdout_file" 2> "$stderr_file"
-        bench_status=$?
-        set -e
-    else
-        "$bench_bin" "${bench_args[@]}"
-        bench_status=$?
-        rm -f "$stdout_file" "$stderr_file"
-        return
-    fi
+    set +e
+    "$bench_bin" "${bench_args[@]}" > "$stdout_file" 2> "$stderr_file"
+    bench_status=$?
+    set -e
 
     local bench_stdout
     local bench_stderr
@@ -722,6 +850,7 @@ status_screen() {
     local running=""
     local processes
     local has_server=0
+    local server_pids=()
 
     processes=$(ps -eo pid=,args= 2>/dev/null | grep -E '(llama-server|llama-cli)' | grep -v grep | head -10)
 
@@ -732,7 +861,11 @@ status_screen() {
         cmd=$(echo "$line" | cut -d' ' -f2-)
 
         local is_server=0
-        echo "$cmd" | grep -q "llama-server" && is_server=1 && has_server=1
+        if echo "$cmd" | grep -q "llama-server"; then
+            is_server=1
+            has_server=1
+            server_pids+=("$pid")
+        fi
 
         local model=""
         local port=""
@@ -784,13 +917,13 @@ status_screen() {
         if is_dialog; then
             if dlg --yesno "A llama-server is currently running.\n\nView live logs from /tmp/llama-server.log?" 8 55; then
                 "$DIALOG_CMD" --backtitle "Don RDNA Lab — llama.cpp v$VERSION" \
-                    --title " llama-server log (press ESC or q to close) " \
-                    --tailbox /tmp/llama-server.log 30 100
+                    --title " llama-server log (↑↓/PgUp/PgDn/Home/End to scroll • ESC/q to close) " \
+                    --tailbox /tmp/llama-server.log 34 140
             fi
         else
-            if dlg --yesno "A llama-server is currently running.\n\nLog file: /tmp/llama-server.log\n\nOpen it with 'less +F' in another terminal?" 10 60; then
+            if dlg --yesno "A llama-server is currently running.\n\nLog file: /tmp/llama-server.log\n\nOpen it with 'less +F' (full width + follow mode) in another terminal?" 11 65; then
                 echo ""
-                echo "Run this command in another terminal:"
+                echo "Recommended command (gives full terminal width + live follow):"
                 echo "  less +F /tmp/llama-server.log"
                 echo ""
                 read -p "Press Enter to continue..."
@@ -800,8 +933,17 @@ status_screen() {
         dlg --msgbox "A llama-server appears to be running, but /tmp/llama-server.log was not found." 8 60
     fi
 
-    # Do not restore set -e here — let the caller decide, or leave it off
-    # for the rest of the function lifetime (safe in this context).
+    # Offer to kill running server(s)
+    if [ "$has_server" = 1 ] && [ ${#server_pids[@]} -gt 0 ]; then
+        if dlg --yesno "Kill the running llama-server process(es)?\n\nPIDs: ${server_pids[*]}" 10 55; then
+            for pid in "${server_pids[@]}"; do
+                kill "$pid" 2>/dev/null
+            done
+            dlg --msgbox "Termination signal sent to server process(es).\n\nYou may want to check Status again in a moment." 8 60
+        fi
+    fi
+
+    set -e  # RESTORE before returning
 }
 
 
@@ -815,8 +957,15 @@ check_prereqs() {
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
 
-    if [ ${#missing[@]} -gt 0 ]; then
-        dlg --msgbox "Missing required tools:\n\n${missing[*]}\n\nSome features may not work." 10 50
+    local notes=""
+    command -v rocminfo &>/dev/null && command -v hipcc &>/dev/null && notes+="ROCm SDK detected\n"
+    command -v vulkaninfo &>/dev/null && command -v glslc &>/dev/null && notes+="Vulkan SDK detected\n"
+
+    if [ ${#missing[@]} -gt 0 ] || [ -n "$notes" ]; then
+        local msg=""
+        [ ${#missing[@]} -gt 0 ] && msg+="Missing required tools:\n${missing[*]}\n\n"
+        [ -n "$notes" ] && msg+="$notes"
+        dlg --msgbox "$msg" 10 55
     fi
 }
 
