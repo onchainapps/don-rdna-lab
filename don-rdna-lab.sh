@@ -208,7 +208,7 @@ run_flow() {
     [[ "$mode" == "server" ]] && bin="$build/bin/llama-server"
 
     if [ ! -f "$bin" ]; then
-        dlg --msgbox "Binary not found: $bin" 6 50
+        dlg --msgbox "Error: Binary not found at\n$bin\n\nPlease build the selected version first." 8 55
         return
     fi
 
@@ -253,19 +253,151 @@ Proceed with launch?" 16 60 3>&1 1>&2 2>&3)
 }
 
 quantize_flow() {
-    dlg --msgbox "Quantization is currently done manually via setup-llama.sh" 6 50
+    local models=()
+    while IFS= read -r m; do models+=("$m" "$(basename "$m")"); done < <(list_models)
+
+    if [ ${#models[@]} -eq 0 ]; then
+        dlg --msgbox "No models found in models/ folder" 6 50
+        return
+    fi
+
+    local model
+    model=$(dlg --menu "Select BF16 Model to Quantize" 20 75 12 "${models[@]}" 3>&1 1>&2 2>&3) || return
+
+    local qtype
+    qtype=$(dlg --menu "Weight Quantization" 10 50 3         Q4_K_M "Q4_K_M - Recommended"         Q5_K_M "Q5_K_M - Higher quality"         Q8_0   "Q8_0 - Maximum quality"         3>&1 1>&2 2>&3) || qtype="Q4_K_M"
+
+    local bin="$LLMS_DIR/llama.cpp/build-vulkan/bin/llama-quantize"
+    if [ ! -f "$bin" ]; then
+        bin="$LLMS_DIR/llama.cpp/build-rocm/bin/llama-quantize"
+    fi
+    if [ ! -f "$bin" ]; then
+        bin="$LLMS_DIR/llama.cpp/build-fat/bin/llama-quantize"
+    fi
+
+    if [ -z "$bin" ] || [ ! -f "$bin" ]; then
+        dlg --msgbox "No llama-quantize binary found. Build first." 6 50
+        return
+    fi
+
+    local out="${model%.gguf}-${qtype}.gguf"
+    dlg --msgbox "Quantizing to $qtype...\nThis may take a while." 7 50
+
+    "$bin" "$model" "$out" "$qtype"
+    dlg --msgbox "Quantization complete!\nOutput: $out" 6 50
 }
 
 validate_model() {
-    dlg --msgbox "Validation coming soon" 6 40
+    local models=()
+    while IFS= read -r m; do models+=("$m" "$(basename "$m")"); done < <(list_models)
+
+    if [ ${#models[@]} -eq 0 ]; then
+        dlg --msgbox "No models found" 6 40
+        return
+    fi
+
+    local model
+    model=$(dlg --menu "Select Model to Validate" 20 75 12 "${models[@]}" 3>&1 1>&2 2>&3) || return
+
+    local msg="=== Model Validation ===
+
+"
+    msg+="File: $(basename "$model")
+"
+    msg+="Size: $(du -h "$model" | cut -f1)
+"
+
+    local magic
+    magic=$(head -c 4 "$model" | xxd -p 2>/dev/null || echo "????")
+    if [[ "$magic" == "67677566" ]]; then
+        msg+="GGUF Magic: OK
+"
+    else
+        msg+="GGUF Magic: FAIL
+"
+    fi
+
+    dlg --msgbox "$msg" 12 60
 }
 
 test_model() {
-    dlg --msgbox "Test coming soon" 6 40
+    local models=()
+    while IFS= read -r m; do models+=("$m" "$(basename "$m")"); done < <(list_models)
+
+    if [ ${#models[@]} -eq 0 ]; then
+        dlg --msgbox "No models found" 6 40
+        return
+    fi
+
+    local model
+    model=$(dlg --menu "Select Model to Test" 20 75 12 "${models[@]}" 3>&1 1>&2 2>&3) || return
+
+    local builds=()
+    while IFS= read -r b; do builds+=("$b" "$(basename "$b")"); done < <(list_builds)
+
+    if [ ${#builds[@]} -eq 0 ]; then
+        dlg --msgbox "No builds found" 6 40
+        return
+    fi
+
+    local build
+    build=$(dlg --menu "Select Build" 14 60 6 "${builds[@]}" 3>&1 1>&2 2>&3) || return
+
+    local bin="$build/bin/llama-cli"
+    if [ ! -f "$bin" ]; then
+        dlg --msgbox "llama-cli not found in build" 6 40
+        return
+    fi
+
+    dlg --msgbox "Testing model load...\nThis will run a short prompt." 6 45
+
+    local result
+    result=$("$bin" -m "$model" -p "Hello" -n 20 -ngl 50 2>&1 | tail -10)
+
+    dlg --msgbox "Test Result:\n\n$result" 18 70
 }
 
 benchmark_flow() {
-    dlg --msgbox "Benchmark coming soon" 6 40
+    local models=()
+    while IFS= read -r m; do models+=("$m" "$(basename "$m")"); done < <(list_models)
+
+    if [ ${#models[@]} -eq 0 ]; then
+        dlg --msgbox "No models found" 6 40
+        return
+    fi
+
+    local model
+    model=$(dlg --menu "Select Model" 20 75 12 "${models[@]}" 3>&1 1>&2 2>&3) || return
+
+    local backend
+    backend=$(dlg --menu "Select Backend" 10 45 4         Vulkan0 "Vulkan"         ROCm0   "ROCm (HIP)"         3>&1 1>&2 2>&3) || return
+
+    local bin=""
+    if [[ "$backend" == "Vulkan0" ]]; then
+        [ -d "$LLMS_DIR/llama.cpp/build-vulkan/bin" ] && bin="$LLMS_DIR/llama.cpp/build-vulkan/bin/llama-bench"
+        [ -z "$bin" ] && [ -d "$LLMS_DIR/llama.cpp/build-fat/bin" ] && bin="$LLMS_DIR/llama.cpp/build-fat/bin/llama-bench"
+    else
+        [ -d "$LLMS_DIR/llama.cpp/build-rocm/bin" ] && bin="$LLMS_DIR/llama.cpp/build-rocm/bin/llama-bench"
+        [ -z "$bin" ] && [ -d "$LLMS_DIR/llama.cpp/build-fat/bin" ] && bin="$LLMS_DIR/llama.cpp/build-fat/bin/llama-bench"
+    fi
+
+    if [ -z "$bin" ] || [ ! -f "$bin" ]; then
+        dlg --msgbox "No llama-bench binary found" 6 50
+        return
+    fi
+
+    local result_file="$LLMS_DIR/results/benchmark_$(date +%Y%m%d_%H%M%S).log"
+    mkdir -p "$LLMS_DIR/results"
+
+    dlg --msgbox "Running benchmark on multiple contexts...\nResults: $result_file" 7 55
+
+    for ctx in 8192 16384 32768; do
+        echo "=== Context: $ctx ===" >> "$result_file"
+        "$bin" -m "$model" -ngl 99 -b 512 -ub 512 -n 128 -p 512 -dev "$backend" 2>&1 | tee -a "$result_file"
+        echo "" >> "$result_file"
+    done
+
+    dlg --msgbox "Benchmark complete!\nResults saved to: $result_file" 6 50
 }
 
 status_screen() {
