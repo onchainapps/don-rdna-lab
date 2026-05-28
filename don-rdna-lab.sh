@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ═══════════════════════════════════════════════════════
-# Don RDNA Lab — Official llama.cpp TUI (v0.3.0)
-# ═══════════════════════════════════════════════════════
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLMS_DIR="${LLMS_DIR:-$HOME/llms}"
 MODELS_DIR="${MODELS_DIR:-$LLMS_DIR/models}"
@@ -128,7 +124,7 @@ install_release_version() {
 }
 
 use_git_clone_build() {
-    dlg --msgbox "Please use setup-llama.sh to clone and build into llama.cpp/build-*" 7 55
+    dlg --msgbox "Please use setup-llama.sh to clone and build" 6 45
 }
 
 list_detected_builds() {
@@ -199,17 +195,13 @@ run_flow() {
         3>&1 1>&2 2>&3) || mode="cli"
 
     local kv
-    if [[ "$mode" == "server" ]]; then
-        kv=$(dlg --menu "KV Cache" 10 50 3 \
-            std   "Standard (q8_0)" \
-            turbo "TurboQuant (turbo3)" \
-            3>&1 1>&2 2>&3) || kv="std"
-    else
-        kv="std"
-    fi
+    kv=$(dlg --menu "KV Cache" 10 50 3 \
+        q8_0 "q8_0 - Recommended" \
+        q4_0 "q4_0 - More aggressive" \
+        3>&1 1>&2 2>&3) || kv="q8_0"
 
     local cache_flags
-    [[ "$kv" == "turbo" ]] && cache_flags="--cache-type-k q8_0 --cache-type-v turbo3" || cache_flags="--cache-type-k q8_0 --cache-type-v q8_0"
+    [[ "$kv" == "q4_0" ]] && cache_flags="--cache-type-k q4_0 --cache-type-v q4_0" || cache_flags="--cache-type-k q8_0 --cache-type-v q8_0"
 
     # Parameter review
     local mtp_label
@@ -257,19 +249,19 @@ Proceed?" 16 55)
 }
 
 quantize_flow() {
-    dlg --msgbox "Use setup-llama.sh or manual llama-quantize for now" 6 50
+    dlg --msgbox "Use setup-llama.sh or manual llama-quantize" 6 50
 }
 
 validate_model() {
-    dlg --msgbox "Validation not yet implemented" 6 40
+    dlg --msgbox "Not implemented yet" 6 40
 }
 
 test_model() {
-    dlg --msgbox "Test not yet implemented" 6 40
+    dlg --msgbox "Not implemented yet" 6 40
 }
 
 benchmark_flow() {
-    dlg --msgbox "Benchmark not yet implemented" 6 40
+    dlg --msgbox "Not implemented yet" 6 40
 }
 
 status_screen() {
