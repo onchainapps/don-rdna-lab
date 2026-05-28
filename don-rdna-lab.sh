@@ -9,6 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLMS_DIR="${LLMS_DIR:-$HOME/llms}"
 MODELS_DIR="${MODELS_DIR:-$LLMS_DIR/models}"
 
+source "$SCRIPT_DIR/lib/common.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/lib/llama.sh" 2>/dev/null || true
+
 VERSION="0.2.0"
 
 DIALOG_CMD=""
@@ -33,7 +36,10 @@ list_models() {
 }
 
 list_builds() {
-    find "$LLMS_DIR" -maxdepth 1 -type d -name "llama-*" 2>/dev/null | sort
+    {
+        find "$LLMS_DIR" -maxdepth 1 -type d -name "llama-*" 2>/dev/null
+        find "$LLMS_DIR/llama.cpp" -maxdepth 1 -type d -name "build-*" 2>/dev/null
+    } | sort
 }
 
 main_menu() {
@@ -66,7 +72,77 @@ main_menu() {
 }
 
 setup_llama() {
-    "$SCRIPT_DIR/setup-llama.sh"
+    while true; do
+        local choice
+        choice=$(dlg --menu "Setup llama.cpp" 16 58 9             1 "Install Release Version"             2 "Use Git Clone + build-*"             3 "List detected builds"             4 "Back"             3>&1 1>&2 2>&3) || return
+
+        case "$choice" in
+            1) install_release_version ;;
+            2) use_git_clone_build ;;
+            3) list_detected_builds ;;
+            4) return ;;
+        esac
+    done
+}
+
+install_release_version() {
+    local releases
+    releases=$(curl -s "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=12" | grep '"tag_name"' | sed 's/.*"tag_name": "\([^"]*\)".*//')
+
+    if [ -z "$releases" ]; then
+        dlg --msgbox "Could not fetch releases" 6 40
+        return
+    fi
+
+    local tag
+    tag=$(dlg --menu "Select Release" 18 50 10         $(echo "$releases" | awk '{print NR, $1}')         3>&1 1>&2 2>&3) || return
+
+    local selected_tag
+    selected_tag=$(echo "$releases" | sed -n "${tag}p")
+
+    dlg --msgbox "Installing release: $selected_tag
+This may take a while..." 7 50
+
+    local build_dir="$LLMS_DIR/llama-$selected_tag"
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+    cd "$build_dir"
+
+    wget -q "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${selected_tag}.tar.gz" -O llama.tar.gz || {
+        dlg --msgbox "Failed to download release" 6 40
+        return
+    }
+
+    tar -xzf llama.tar.gz --strip-components=1
+    rm llama.tar.gz
+
+    dlg --msgbox "Download complete. Now building..." 6 40
+
+    # Build Vulkan by default for this flow
+    cmake -B build-vulkan -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+    cmake --build build-vulkan -- -j"$(nproc)"
+
+    dlg --msgbox "Release $selected_tag installed to:
+$build_dir/build-vulkan" 7 55
+}
+
+use_git_clone_build() {
+    clone_llama
+    dlg --msgbox "Repo ready. Use setup-llama.sh to build Vulkan/ROCm/Fat into llama.cpp/build-*" 7 55
+}
+
+list_detected_builds() {
+    local builds=()
+    while IFS= read -r b; do
+        builds+=("$b" "$(basename "$b")")
+    done < <(find "$LLMS_DIR" -maxdepth 2 -type d \( -name "llama-*" -o -name "build-*" \) 2>/dev/null | sort)
+
+    if [ ${#builds[@]} -eq 0 ]; then
+        dlg --msgbox "No builds detected" 6 40
+        return
+    fi
+
+    dlg --menu "Detected Builds" 16 70 8 "${builds[@]}" 3>&1 1>&2 2>&3
 }
 
 run_flow() {
@@ -120,17 +196,43 @@ run_flow() {
     local mtp_flag=""
     [[ "$mtp" == "on" ]] && mtp_flag="--spec-type draft-mtp"
 
+    local kv="std"
     local mode
     mode=$(dlg --menu "Run mode" 10 48 3 \
         cli    "llama-cli" \
         server "llama-server" \
         3>&1 1>&2 2>&3) || mode="cli"
+    local kv="std"
 
     local bin="$build/bin/llama-cli"
     [[ "$mode" == "server" ]] && bin="$build/bin/llama-server"
 
     if [ ! -f "$bin" ]; then
         dlg --msgbox "Binary not found: $bin" 6 50
+        return
+    fi
+
+    # Show parameters before launch
+    local kv_label
+    [[ "$kv" == "turbo" ]] && kv_label="TurboQuant (turbo3)" || kv_label="Standard (q8_0)"
+
+    local mtp_label
+    [[ "$mtp" == "on" ]] && mtp_label="On" || mtp_label="Off"
+
+    local confirm
+    confirm=$(dlg --yesno "Launch Parameters:
+
+Model:    $(basename "$model")
+Build:    $(basename "$build")
+Backend:  $backend
+Context:  $ctx
+MTP:      $mtp_label
+KV Cache: $kv_label
+Mode:     $mode
+
+Proceed with launch?" 16 60 3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ]; then
         return
     fi
 

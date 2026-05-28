@@ -9,7 +9,7 @@
   - Use Git Clone + build-*
   - List detected builds
 - `list_builds()` now detects both `llama-*` folders and `llama.cpp/build-*` folders
-- KV Cache enforcement for TurboQuant models (forces `turbo*` when model name contains "TQ")
+- KV Cache enforcement for llama.cpp models (forces `turbo*` when model name contains "TQ")
 - Version number displayed in TUI backtitle (`v0.3.0`)
 
 ### Changed
@@ -28,7 +28,7 @@
 
 ## [0.2.0] - 2026-05-27
 
-- Full migration from TurboQuant fork to official `ggml-org/llama.cpp`
+- Full migration from llama.cpp fork to official `ggml-org/llama.cpp`
 - New `setup-llama.sh` with release selection + Vulkan/ROCm/Fat builds
 - Clean TUI structure
 
@@ -36,4 +36,4 @@
 
 ## [0.1.0] - 2026-05-27
 
-Initial TurboQuant-focused version (archived).
+Initial llama.cpp-focused version (archived).

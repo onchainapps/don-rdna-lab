@@ -1,14 +1,14 @@
-# Don RDNA Lab — TurboQuant
+# Don RDNA Lab — llama.cpp
 
-Clean TUI for running LLM inference on the RX 7900 XTX using **TurboQuant** (a llama.cpp fork).
+Clean TUI for running LLM inference on the RX 7900 XTX using **llama.cpp** (a llama.cpp fork).
 
 ## Focus
 
-This project is now focused **exclusively** on TurboQuant.
+This project is now focused **exclusively** on llama.cpp.
 
 ## Features
 
-- Setup (clone + build) TurboQuant
+- Setup (clone + build) llama.cpp
 - Run Inference (`llama-cli` or `llama-server`)
 - Quantize models (TQ4_1S / TQ3_1S + turbo KV cache)
 - Validate and test quantized models
@@ -42,8 +42,8 @@ cd ~/llms/don-rdna-lab
 ## Files
 
 - `don-rdna-lab.sh` — Main TUI
-- `setup-turboquant.sh` — Build and helper script
+- `setup-llama.sh` — Build and helper script
 
 ## Note
 
-Other engines (hipEngine, ROCmFP4) have been removed. This project is now TurboQuant-only.
+Other engines (hipEngine, ROCmFP4) have been removed. This project is now llama.cpp-only.
