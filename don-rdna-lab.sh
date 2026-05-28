@@ -6,7 +6,7 @@ LLMS_DIR="${LLMS_DIR:-$HOME/llms}"
 MODELS_DIR="${MODELS_DIR:-$LLMS_DIR/models}"
 BENCHMARKS_DIR="${BENCHMARKS_DIR:-$LLMS_DIR/benchmarks}"
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 
 DIALOG_CMD=""
 detect_dialog() {
@@ -711,33 +711,43 @@ Run benchmark?" 17 55; then
 }
 
 status_screen() {
+    # Run the entire status screen with set +e to prevent any
+    # non-critical command (grep, find, wc, dialog return codes, etc.)
+    # from killing the TUI.
+    set +e
+
     local status="llama.cpp Status\n\n"
 
     # Running instances detection
     local running=""
-    # Find llama-server and llama-cli processes
+    local processes
+    local has_server=0
+
+    processes=$(ps -eo pid=,args= 2>/dev/null | grep -E '(llama-server|llama-cli)' | grep -v grep | head -10)
+
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         local pid cmd
         pid=$(echo "$line" | awk '{print $1}')
         cmd=$(echo "$line" | cut -d' ' -f2-)
 
-        # Try to extract useful info
+        local is_server=0
+        echo "$cmd" | grep -q "llama-server" && is_server=1 && has_server=1
+
         local model=""
         local port=""
-        if echo "$cmd" | grep -q -- "-m "; then
-            model=$(echo "$cmd" | sed -n 's/.*-m \([^ ]*\).*/\1/p' | xargs basename 2>/dev/null)
-        fi
-        if echo "$cmd" | grep -q -- "--port "; then
-            port=$(echo "$cmd" | sed -n 's/.*--port \([^ ]*\).*/\1/p')
-        fi
+        echo "$cmd" | grep -q -- "-m " && model=$(echo "$cmd" | sed -n 's/.*-m \([^ ]*\).*/\1/p' | xargs basename 2>/dev/null)
+        echo "$cmd" | grep -q -- "--port " && port=$(echo "$cmd" | sed -n 's/.*--port \([^ ]*\).*/\1/p')
 
         local label="PID $pid"
+        if [ "$is_server" = 1 ]; then
+            label+=" [SERVER]"
+        fi
         [ -n "$model" ] && label+=" | Model: $model"
         [ -n "$port" ] && label+=" | Port: $port"
 
         running+="  $label\n"
-    done < <(ps -eo pid=,args= 2>/dev/null | grep -E '(llama-server|llama-cli)' | grep -v grep | head -10)
+    done <<< "$processes"
 
     if [ -n "$running" ]; then
         status+="Running llama.cpp instances:\n$running\n"
@@ -747,20 +757,19 @@ status_screen() {
 
     # Builds
     status+="Models dir: $MODELS_DIR\n"
-    status+="Models found: $(list_models 2>/dev/null | wc -l)\n\n"
+    status+="Models found: $(list_models 2>/dev/null | wc -l || echo 0)\n\n"
 
     local builds
-    builds=$(list_builds 2>/dev/null)
+    builds=$(list_builds 2>/dev/null || true)
     if [ -n "$builds" ]; then
         status+="Detected builds:\n"
         while IFS= read -r b; do
             local bin_count=0
             if [ -d "$b/bin" ]; then
-                bin_count=$(find "$b/bin" -maxdepth 1 -type f -executable 2>/dev/null | wc -l)
+                bin_count=$(find "$b/bin" -maxdepth 1 -type f -executable 2>/dev/null | wc -l || echo 0)
             fi
-            # Also count flat layout (current prebuilts)
             local flat_count
-            flat_count=$(find "$b" -maxdepth 1 -type f -executable -name 'llama-*' 2>/dev/null | wc -l)
+            flat_count=$(find "$b" -maxdepth 1 -type f -executable -name 'llama-*' 2>/dev/null | wc -l || echo 0)
             bin_count=$((bin_count + flat_count))
             status+="  $(basename "$b") — $bin_count executables\n"
         done <<< "$builds"
@@ -769,7 +778,32 @@ status_screen() {
     fi
 
     dlg --msgbox "$status" 20 75
+
+    # Offer to view live logs if a llama-server is running
+    if [ "$has_server" = 1 ] && [ -f /tmp/llama-server.log ]; then
+        if is_dialog; then
+            if dlg --yesno "A llama-server is currently running.\n\nView live logs from /tmp/llama-server.log?" 8 55; then
+                "$DIALOG_CMD" --backtitle "Don RDNA Lab — llama.cpp v$VERSION" \
+                    --title " llama-server log (press ESC or q to close) " \
+                    --tailbox /tmp/llama-server.log 30 100
+            fi
+        else
+            if dlg --yesno "A llama-server is currently running.\n\nLog file: /tmp/llama-server.log\n\nOpen it with 'less +F' in another terminal?" 10 60; then
+                echo ""
+                echo "Run this command in another terminal:"
+                echo "  less +F /tmp/llama-server.log"
+                echo ""
+                read -p "Press Enter to continue..."
+            fi
+        fi
+    elif [ "$has_server" = 1 ]; then
+        dlg --msgbox "A llama-server appears to be running, but /tmp/llama-server.log was not found." 8 60
+    fi
+
+    # Do not restore set -e here — let the caller decide, or leave it off
+    # for the rest of the function lifetime (safe in this context).
 }
+
 
 api_screen() {
     dlg --msgbox "OpenAI-compatible API endpoint:\n\nhttp://localhost:8080/v1\n\nStart a server via 'Run Inference' → server mode.\n\nTest with:\ncurl http://localhost:8080/v1/models" 12 60
