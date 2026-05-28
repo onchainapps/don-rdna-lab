@@ -8,7 +8,8 @@ LLAMA_DIR="${LLAMA_DIR:-$LLMS_DIR/llama.cpp}"
 clone_llama() {
     if [ -d "$LLAMA_DIR/.git" ]; then
         info "Updating llama.cpp..."
-        cd "$LLAMA_DIR" && git fetch --tags
+        cd "$LLAMA_DIR" || { error "Failed to enter $LLAMA_DIR"; return 1; }
+        git fetch --tags
     else
         info "Cloning llama.cpp..."
         git clone https://github.com/ggml-org/llama.cpp.git "$LLAMA_DIR"
@@ -16,7 +17,7 @@ clone_llama() {
 }
 
 build_vulkan() {
-    cd "$LLAMA_DIR"
+    cd "$LLAMA_DIR" || { error "Failed to enter $LLAMA_DIR"; return 1; }
     rm -rf build-vulkan
     info "Building with Vulkan..."
     cmake -B build-vulkan -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
@@ -25,7 +26,7 @@ build_vulkan() {
 }
 
 build_rocm() {
-    cd "$LLAMA_DIR"
+    cd "$LLAMA_DIR" || { error "Failed to enter $LLAMA_DIR"; return 1; }
     rm -rf build-rocm
     info "Building with ROCm (gfx1100)..."
     cmake -B build-rocm \
@@ -37,7 +38,7 @@ build_rocm() {
 }
 
 build_fat() {
-    cd "$LLAMA_DIR"
+    cd "$LLAMA_DIR" || { error "Failed to enter $LLAMA_DIR"; return 1; }
     rm -rf build-fat
     info "Building Fat (Vulkan + ROCm)..."
     cmake -B build-fat \
